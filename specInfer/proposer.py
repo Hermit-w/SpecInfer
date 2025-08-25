@@ -24,14 +24,14 @@ class Proposer(ABC):
 
     def propose(
         self,
-        input: InputForCasualLm,
+        inputs: InputForCasualLm,
         n: int,
-        sample_method: Callable[[torch.Tensor], torch.Tensor],
+        logits_to_scores: Callable[[torch.Tensor], torch.Tensor],
     ) -> OutputForCasualLm:
         if self.benchmark_time:
             start = synchronize_time()
 
-        ret = self.propose_impl(input, n, sample_method)
+        ret = self.propose_impl(inputs, n, logits_to_scores)
 
         if self.benchmark_time:
             end = synchronize_time()
@@ -42,7 +42,7 @@ class Proposer(ABC):
     @abstractmethod
     def propose_impl(
         self,
-        input: InputForCasualLm,
+        inputs: InputForCasualLm,
         n: int,
         sample_method: Callable[[torch.Tensor], torch.Tensor]
     ) -> OutputForCasualLm:
@@ -91,9 +91,9 @@ class RandomProposer(Proposer):
 
     def propose_impl(
         self,
-        input: InputForCasualLm,
+        inputs: InputForCasualLm,
         n: int,
-        sample_method: Callable[[torch.Tensor], torch.Tensor],
+        logits_to_scores: Callable[[torch.Tensor], torch.Tensor],
     ) -> OutputForCasualLm:
         raise NotImplementedError
         return OutputForCasualLm(1, torch.randint(0, 32000, (1, 16), device='cuda'), None)
@@ -120,11 +120,11 @@ class ModelProposer(Proposer):
 
     def propose_impl(
         self,
-        input: InputForCasualLm,
+        inputs: InputForCasualLm,
         n: int,
         sample_method: Callable[[torch.Tensor], torch.Tensor]
     ) -> OutputForCasualLm:
-        if input.input_ids.shape[0] > 1:
+        if inputs.input_ids.shape[0] > 1:
             raise NotImplementedError(
                 "Not implement for batch_size > 1 in evaluation")
         raise NotImplementedError
@@ -151,18 +151,19 @@ class ModelWithCacheProposer(Proposer):
 
     def propose_impl(
         self,
-        input,
-        n,
-        sample_method
+        inputs: InputForCasualLm,
+        n: int,
+        logits_to_scores: Callable[[torch.Tensor], torch.Tensor],
     ) -> OutputForCasualLm:
-        if input.input_ids.shape[0] > 1:
+        if inputs.input_ids.shape[0] > 1:
             raise NotImplementedError(
                 "Not implement for batch_size > 1 in evaluation")
-        propose_tokens_list: list = []
-        propose_logits_list: list = []
-        propose_distributions_list: list = []
-        input_ids = input.input_ids
-        past_key_values = input.past_key_values
+        propose_tokens_list: list[torch.Tensor] = []
+        propose_logits_list: list[torch.Tensor] = []
+        propose_distributions_list: list[torch.Tensor] = []
+        input_ids = inputs.input_ids
+        past_key_values = inputs.past_key_values
+        generated_len: int = n
         for i in range(n):
             outputs: CausalLMOutputWithPast = self.model(
                 input_ids=input_ids,
@@ -176,12 +177,13 @@ class ModelWithCacheProposer(Proposer):
                     "There is None in Model's outputs"
                     )
                 raise ValueError
+            past_key_values = outputs.past_key_values
             next_token_logits = next_token_logits_[:, -1, :]
-            distribution = sample_method(next_token_logits)
+            distribution = logits_to_scores(next_token_logits)
             next_token_id = torch.multinomial(distribution, num_samples=1)
 
-            propose_logits_list.append(next_token_logits)
-            propose_distributions_list.append(distribution)
+            propose_logits_list.append(next_token_logits.unsqueeze(1))  # recover the dim
+            propose_distributions_list.append(distribution.unsqueeze(1))
             propose_tokens_list.append(next_token_id)
             if next_token_id.item() == self.tokenizer.eos_token_id:
                 generated_len = i + 1
@@ -189,8 +191,8 @@ class ModelWithCacheProposer(Proposer):
                 break
             input_ids = next_token_id
         propose_tokens = torch.cat(propose_tokens_list, dim=-1)
-        propose_logits = torch.cat(propose_logits_list, dim=0)
-        propose_distributions = torch.cat(propose_distributions_list, dim=0)
+        propose_logits = torch.cat(propose_logits_list, dim=1)
+        propose_distributions = torch.cat(propose_distributions_list, dim=1)
         return OutputForCasualLm(
             generated_len,
             propose_tokens,

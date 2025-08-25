@@ -1,7 +1,6 @@
 import numpy as np
 import torch
 import transformers
-from transformers import LogitsProcessorList
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
 from common import InputForCasualLm, OutputForCasualLm, synchronize_time
@@ -18,7 +17,6 @@ class Verifier:
     ) -> None:
         self.model = model
         self.tokenizer = tokenizer
-        self.processor = LogitsProcessorList()
 
         self.verify_times: list[float] = []
         self.prepare_input_time: float = 0.0
@@ -48,39 +46,53 @@ class Verifier:
 
     def verify(
         self,
-        input: InputForCasualLm,
+        inputs: InputForCasualLm,
         propose_len: int,
-        sample_method
-    ) -> tuple[InputForCasualLm, torch.Tensor]:
+        logits_to_scores
+    ) -> OutputForCasualLm:
         if self.benchmark_time:
             start = synchronize_time()
 
         outputs: CausalLMOutputWithPast = self.model(
-            input_ids=input.input_ids,
-            attention_mask=input.attention_mask,
-            past_key_values=input.past_key_values,
+            input_ids=inputs.input_ids,
+            attention_mask=inputs.attention_mask,
+            past_key_values=inputs.past_key_values,
             use_cache=True
         )
 
-        next_token_scores = self.processor(input.input_ids, outputs.logits)
+        if outputs.logits is None:
+            logger.error("Get none logits from model!")
+            raise ValueError
+        modified_logits = outputs.logits
         generated_len = propose_len + 1
-        logits = next_token_scores[:, -generated_len:, :]
-        # next_tokens = sample_fn(logits)
+        logits = modified_logits[:, -generated_len:, :]
+        scores = logits_to_scores(logits)
 
         if self.benchmark_time:
             self.verify_times.append(synchronize_time() - start)
-        # output logits/distribution has shape [# of proposed tokens, vocab_size]
-        # we squeeze the batch size dimension in the output because it is always 1
-        return OutputForCasualLm(generated_len, None, logits.squeeze(0),
-                              sample_method(logits.squeeze(0)), outputs.past_key_values)
+
+        return OutputForCasualLm(
+            generated_len,
+            None,
+            logits,
+            scores,
+            outputs.past_key_values
+        )
 
     def prepare_input(
         self,
         proposer_output: OutputForCasualLm,
         verifier_input: InputForCasualLm
     ) -> InputForCasualLm:
+        """
+        Concatenate the proposer_output and verifier_input
+        """
         if self.benchmark_time:
             start = synchronize_time()
+
+        if proposer_output.output_ids is None:
+            logger.error("Get none output_ids!")
+            raise ValueError
 
         if verifier_input.past_key_values is None:
             # concatenate proposed inputs with prompts

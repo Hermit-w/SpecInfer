@@ -4,8 +4,8 @@ from dataclasses import dataclass
 
 import torch
 import transformers
-
-from common import InputForCasualLm, OutputForCasualLm, synchronize_time
+from common import (InputForCasualLm, OutputForCasualLm, synchronize_time,
+                    target_sample_from_distribution)
 from proposer import ModelProposer, ModelWithCacheProposer
 from verifier import Verifier
 
@@ -60,6 +60,65 @@ class SpecGenerator:
             tokenizer,
             benchmark_time
         )
+    
+    def speculative_sample(
+        self,
+        proposed_output: OutputForCasualLm,
+        verified_output: OutputForCasualLm
+    ) -> tuple[list[torch.Tensor], list[float], list[int]]:
+        # Accept-reject token loop
+        accept_ids: list[torch.Tensor] = []
+        if proposed_output.output_ids is None:
+            logger.error("Get none output_ids!")
+            raise ValueError
+        bs = proposed_output.output_ids.shape[0]
+        sample_steps: list[int] = [0] * bs
+        alpha: list[float] = [0.0] * bs
+        for i in range(bs):
+            all_accepted: bool = True
+            accept_ids_i: list[torch.Tensor] = []
+            for j in range(proposed_output.generated_length):
+                sampled_ratios = (
+                    verified_output.output_distribution[i, j,proposed_output.output_ids[i, j]]
+                    / proposed_output.output_distribution[i, j, proposed_output.output_ids[i, j]]
+                )
+
+                sampled_ratios = torch.min(sampled_ratios,
+                                           torch.ones_like(sampled_ratios))
+                rs = torch.rand_like(sampled_ratios)
+                # logger.log("sample ratio", (rs, sampled_ratios))
+                cur_alpha_tensor = torch.min(verified_output.output_distribution[i, j, proposed_output.output_ids[i, j]],
+                                             proposed_output.output_distribution[i, j, proposed_output.output_ids[i, j]])
+                assert cur_alpha_tensor.numel() == 1
+                cur_alpha = float(cur_alpha_tensor)
+
+
+                assert cur_alpha >= 0 and cur_alpha <= 1
+                alpha[i] += cur_alpha
+                sample_steps[i] += 1
+                if rs < sampled_ratios:
+                    accept_ids_i.append(proposed_output.output_ids[i, j].unsqueeze(0))
+                else:
+                    all_accepted = False
+                    next_token_id = target_sample_from_distribution(
+                        verified_output.output_distribution[i, j, :],
+                        proposed_output.output_distribution[i, j, :]
+                    )
+                    accept_ids_i.append(next_token_id.unsqueeze(0))
+                    break
+
+            # if all tokens were accepted, sample a last one
+            if all_accepted:
+                next_token_id = torch.multinomial(
+                    verified_output.output_distribution[i, -1, :],
+                    num_samples=1,
+                )
+
+                assert next_token_id.dim() == 1
+                accept_ids_i.append(next_token_id)
+            accept_ids.append(torch.cat(accept_ids_i, dim=0))
+
+        return accept_ids, alpha, sample_steps
 
     @torch.inference_mode()
     def generate(
@@ -71,13 +130,13 @@ class SpecGenerator:
     ) -> GeneratorOutput:
         self.target_model.eval()
         self.draft_model.eval()
+        batch_size = input_ids.shape[0]
 
-        def sample_method(logits: torch.Tensor):
+        def logits_to_scores(logits: torch.Tensor):
             return torch.softmax(logits / temperature, dim=-1)
-
-        generated_token_cnt = 0
+        generated_token_cnt: int = 0
         generated_tokens = None
-        wrong_token_ids = []
+        wrong_token_ids: list = []
 
         proposer_input = InputForCasualLm(input_ids, attention_mask, None)
         verifier_input = copy.deepcopy(proposer_input)
@@ -90,7 +149,7 @@ class SpecGenerator:
             proposer_output = self.proposer.propose(
                 proposer_input,
                 self.max_propose_num,
-                sample_method
+                logits_to_scores
             )
             propose_steps += 1
 
@@ -99,17 +158,23 @@ class SpecGenerator:
                 proposer_output,
                 verifier_input
             )
+            logger.debug(verifier_input.input_ids)
 
             # forward n tokens on the model in the a single run
             verifier_output = self.verifier.verify(
                 verifier_input,
                 proposer_output.generated_length,
-                sample_method)
+                logits_to_scores
+            )
 
             # compare selected tokens
             # accept_token_ids, cur_alpha, cur_sample_steps = self.compare_tokens(proposer_output, verifier_output)
-            accept_token_ids, cur_alpha, cur_sample_steps = self.sample_tokens(
-                proposer_output, verifier_output)
+            accept_token_ids, cur_alpha, cur_sample_steps = self.speculative_sample(
+                proposer_output,
+                verifier_output
+            )
+            logger.debug(accept_token_ids)
+
             alpha += cur_alpha
             sample_steps += cur_sample_steps
             # logger.log("acc_tokens", accept_token_ids)
@@ -136,7 +201,7 @@ class SpecGenerator:
             if self.benchmark_time:
                 self.generation_time.append(synchronize_time() - start)
 
-            if generated_token_cnt >= max_tokens \
+            if (max_tokens > 0 and generated_token_cnt >= max_tokens) \
                or self.tokenizer.eos_token_id in accept_token_ids:
                 break
 
