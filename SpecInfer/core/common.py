@@ -31,7 +31,7 @@ class InputForCasualLm:
 @dataclass
 class OutputForCasualLm:
     generated_length: int
-    output_ids: torch.Tensor
+    output_ids: Optional[torch.Tensor]
     output_logits: torch.Tensor
     output_distribution: torch.Tensor
     past_key_values: Optional[transformers.Cache]

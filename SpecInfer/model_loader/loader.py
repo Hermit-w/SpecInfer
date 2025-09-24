@@ -1,14 +1,16 @@
 import logging
+import os
+from typing import TYPE_CHECKING
 
 import transformers
-from transformers import AutoModelForCausalLM, AutoTokenizer
-
-from typing import TYPE_CHECKING
+from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
 if TYPE_CHECKING:
     # class for better type annotations
     from transformers.models.auto.modeling_auto import _BaseModelWithGenerate
+
 logger = logging.getLogger(__name__)
+rank = int(os.environ.get("RANK", 0))
 
 class ModelLoader:
     @classmethod
@@ -16,11 +18,36 @@ class ModelLoader:
         cls,
         model_name_or_path: str,
         tp_size: int = 1,
+        *,
+        torch_dtype: str = "auto",
     ) -> "_BaseModelWithGenerate":
+        config = AutoConfig.from_pretrained(model_name_or_path)
+        # Direct load will lead to error 
+        # Referring https://github.com/huggingface/transformers/issues/41092
+        if hasattr(config, "num_key_value_heads"):
+            assert hasattr(config, "base_model_tp_plan"), f"Existing model: {config.architectures[0]} doesn't support tp"
+            if config.num_key_value_heads % tp_size != 0:
+                if rank == 0:
+                    logger.warning(f"Existing model has kv_heads={config.num_key_value_heads} while setting tp_size={tp_size}, which may lead to error")
+                if tp_size % config.num_key_value_heads != 0:
+                    if rank == 0:
+                        logger.error(f"Existing method doesn't support {config.architectures[0]} with tp_size={tp_size}")
+                    raise ValueError(f"Existing method doesn't support {config.architectures[0]} with tp_size={tp_size}")
+                if rank == 0:
+                    logger.warning("Try to pass our customize tp_plan to model")
+                plan = config.base_model_tp_plan
+                # This is solution provided by core maintainer of transformers
+                # Referring https://github.com/huggingface/transformers/issues/40953#issuecomment-3311635988
+                plan["layers.*.self_attn.q_proj"] = "colwise_rep"
+                plan["layers.*.self_attn.k_proj"] = "colwise_rep"
+                plan["layers.*.self_attn.v_proj"] = "colwise_rep"
+                plan["layers.*.self_attn.o_proj"] = "rowwise_rep"
         model = AutoModelForCausalLM.from_pretrained(
             model_name_or_path,
+            config=config,
             tp_size=tp_size,
-            tp_plan="auto"
+            tp_plan="auto",
+            dtype=torch_dtype,
         )
         return model
 
@@ -29,16 +56,18 @@ class ModelLoader:
         cls,
         model_name_or_path: str,
         tp_size: int = 1,
+        *,
+        torch_dtype: str = "auto",
     ) -> tuple["_BaseModelWithGenerate", transformers.PreTrainedTokenizerBase]:
         tokenizer = AutoTokenizer.from_pretrained(
             model_name_or_path,
         )
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
-        model = AutoModelForCausalLM.from_pretrained(
+        model = cls.load_model(
             model_name_or_path,
-            tp_size=tp_size,
-            tp_plan="auto"
+            tp_size,
+            torch_dtype=torch_dtype,
         )
         return model, tokenizer
     
@@ -47,6 +76,8 @@ class ModelLoader:
         cls,
         model_name_or_path: str,
         tp_size: int,
+        *,
+        torch_dtype: str = "auto",
     ) -> "_BaseModelWithGenerate":
         raise NotImplementedError(
             "This function is useless now since transformers have supported tensor parallel."
