@@ -1,8 +1,17 @@
 import torch
-import logging
-import transformers
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from typing import Callable
+from .common import synchronize_time
+
+def get_softmax_func(temperature: float) -> Callable[[torch.Tensor], torch.Tensor]:
+    def sample_method(tensor: torch.Tensor) -> torch.Tensor:
+            tensor = tensor / temperature
+            return torch.nn.functional.softmax(tensor, dim=-1)
+    return sample_method
 
 
-logger = logging.getLogger(__name__)
-
+def benchmark_time(func: Callable) -> tuple[Callable, float]:
+    start_time = synchronize_time()
+    def inner_func(*args, **kwargs):
+        return func(*args, **kwargs)
+    end_time = synchronize_time()
+    return inner_func, end_time - start_time

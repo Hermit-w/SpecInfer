@@ -1,4 +1,5 @@
 import logging
+import os
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Callable, Union
 
@@ -15,6 +16,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+rank = int(os.environ.get("RANK", 0))
 
 class Proposer(ABC):
     def __init__(
@@ -147,7 +149,7 @@ class ModelWithCacheProposer(Proposer):
         self,
         model: "_BaseModelWithGenerate",
         tokenizer: "PreTrainedTokenizerBase",
-        benchmark_time: bool,
+        benchmark_time: bool = False,
     ):
         super().__init__(benchmark_time)
         self.model: "_BaseModelWithGenerate" = model
@@ -169,11 +171,9 @@ class ModelWithCacheProposer(Proposer):
         propose_tokens_list: list = []
         propose_logits_list: list = []
         propose_distributions_list: list = []
-        input_ids = inputs.input_ids.to(self.model.device)
-        attention_mask = inputs.attention_mask.to(self.model.device)
+        input_ids = inputs.input_ids
+        attention_mask = inputs.attention_mask
         past_key_values = inputs.past_key_values
-        if past_key_values is not None:
-            past_key_values = inputs.past_key_values.to(self.model.device)
         generated_len = n
         for i in range(n):
             outputs: CausalLMOutputWithPast = self.model(

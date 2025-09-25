@@ -1,19 +1,31 @@
 import logging
 import time
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Union, TYPE_CHECKING
+import os
 
 import torch
 import transformers
 
-logger = logging.getLogger(__name__)
+if TYPE_CHECKING:
+    from torch._prims_common import DeviceLikeType
 
+logger = logging.getLogger(__name__)
+rank = int(os.environ.get("RANK", 0))
 
 @dataclass
 class InputForCasualLm:
     input_ids: torch.Tensor
     attention_mask: torch.Tensor
     past_key_values: Optional[transformers.Cache]
+
+    def to(
+        self,
+        device: "DeviceLikeType"
+    ) -> "InputForCasualLm":
+        self.input_ids = self.input_ids.to(device)
+        self.attention_mask = self.attention_mask.to(device)
+        return self
 
     @classmethod
     def from_prompt(

@@ -1,109 +1,120 @@
 import logging
+import os
+from typing import TYPE_CHECKING, Callable
 
 import numpy as np
 import torch
-import transformers
-from transformers import LogitsProcessorList
 from transformers.modeling_outputs import CausalLMOutputWithPast
+
+if TYPE_CHECKING:
+    from transformers import PreTrainedTokenizerBase
+    from transformers.models.auto.modeling_auto import _BaseModelWithGenerate
 
 from .common import InputForCasualLm, OutputForCasualLm, synchronize_time
 
 logger = logging.getLogger(__name__)
 
+rank = int(os.environ.get("RANK", 0))
+
 class Verifier:
     def __init__(
         self,
-        model: transformers.PreTrainedModel,
-        tokenizer: transformers.PreTrainedTokenizerBase,
+        model: "_BaseModelWithGenerate",
+        tokenizer: "PreTrainedTokenizerBase",
         benchmark_time: bool = False
     ) -> None:
         self.model = model
         self.tokenizer = tokenizer
-        self.processor = LogitsProcessorList()
 
-        self.verify_times: list[float] = []
+        self.verify_time: list[float] = []
         self.prepare_input_time: float = 0.0
         self.adjust_input_time: float = 0.0
         self.benchmark_time: bool = benchmark_time
 
-    def compare_tokens(
-        self,
-        proposed_output: OutputForCasualLm,
-        verified_output: OutputForCasualLm
-    ) -> torch.Tensor:
-        if not proposed_output.output_ids.shape == \
-           verified_output.output_ids[:, :-1].shape:
-            logger.error(
-                f"{proposed_output.output_ids.shape}, \
-                  {verified_output.output_ids[:, :-1].shape}"
-            )
-            raise ValueError("Not compatiable shape")
-
-        # a = [[1, 2, 3]], b = [[1, 2, 4]]
-        # ~(a == b): [[0, 0, 1]]
-        # after cumsum: [[0, 0, 1]]
-        # after < 1: [[1, 1, 0]]
-        n_matches = ((~(proposed_output.output_ids ==
-                     verified_output.output_ids[:, :-1])).cumsum(dim=-1) < 1).sum()
-        return verified_output.output_ids[:, :n_matches + 1], -1, -1
-
     def verify(
         self,
-        input: InputForCasualLm,
-        propose_len: int,
-        sample_method
-    ) -> tuple[InputForCasualLm, torch.Tensor]:
+        inputs: InputForCasualLm,
+        sample_method: Callable[[torch.Tensor], torch.Tensor],
+    ) -> OutputForCasualLm:
         if self.benchmark_time:
             start = synchronize_time()
 
+        input_ids = inputs.input_ids.to(self.model.device)
+        attention_mask = inputs.attention_mask.to(self.model.device)
+        past_key_values = inputs.past_key_values
+        # if past_key_values is not None:
+        #     past_key_values = past_key_values.to(self.model.device)
+
         outputs: CausalLMOutputWithPast = self.model(
-            input_ids=input.input_ids,
-            attention_mask=input.attention_mask,
-            past_key_values=input.past_key_values,
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            past_key_values=past_key_values,
             use_cache=True
         )
 
-        next_token_scores = self.processor(input.input_ids, outputs.logits)
-        generated_len = propose_len + 1
-        logits = next_token_scores[:, -generated_len:, :]
-        # next_tokens = sample_fn(logits)
+        token_logits = outputs.logits
+        propose_len = inputs.input_ids.shape[1]
+        if token_logits is None:
+            logger.error(f"The logits returned by model is None.")
+            raise ValueError(f"The logits in the output is None.")
+        logits = token_logits[:, -propose_len:, :]
+        distribution = sample_method(logits)
 
         if self.benchmark_time:
-            self.verify_times.append(synchronize_time() - start)
+            self.verify_time.append(synchronize_time() - start)
         # output logits/distribution has shape [# of proposed tokens, vocab_size]
-        # we squeeze the batch size dimension in the output because it is always 1
-        return OutputForCasualLm(generated_len, None, logits.squeeze(0),
-                              sample_method(logits.squeeze(0)), outputs.past_key_values)
+        return OutputForCasualLm(
+            propose_len,
+            None,
+            logits,
+            distribution,
+            outputs.past_key_values
+        )
 
+
+    @classmethod
     def prepare_input(
-        self,
+        cls,
         proposer_output: OutputForCasualLm,
-        verifier_input: InputForCasualLm
+        verifier_input: InputForCasualLm,
     ) -> InputForCasualLm:
-        if self.benchmark_time:
-            start = synchronize_time()
+        assert proposer_output.output_ids is not None, "The proposer's output contains None ids"
 
         if verifier_input.past_key_values is None:
             # concatenate proposed inputs with prompts
             input_ids = torch.cat(
-                [verifier_input.input_ids, proposer_output.output_ids], dim=-1)
+                [verifier_input.input_ids, proposer_output.output_ids],
+                dim=-1
+            )
             # concatenate prompt masks with proposed token masks
-            attention_mask = torch.cat([verifier_input.attention_mask,
-                                        torch.ones_like(proposer_output.output_ids,
-                                                        dtype=torch.long, device="cuda")], dim=-1)
+            attention_mask = torch.cat(
+                [verifier_input.attention_mask,
+                 torch.ones_like(
+                     proposer_output.output_ids,
+                     dtype=torch.long,
+                     device=verifier_input.attention_mask.device
+                    )
+                ],
+                dim=-1
+            )
             # prompt phase, we don't have kv cache (past_key_values)
             past_key_values = None
         else:
-            input_ids = torch.cat([verifier_input.input_ids.unsqueeze(
-                0), proposer_output.output_ids], dim=-1)
-            attention_mask = torch.cat([verifier_input.attention_mask,
-                                        torch.ones_like(proposer_output.output_ids,
-                                                        dtype=torch.long, device="cuda")], dim=-1)
+            input_ids = torch.cat(
+                [verifier_input.input_ids, proposer_output.output_ids],
+                dim=-1
+            )
+            attention_mask = torch.cat(
+                [verifier_input.attention_mask,
+                 torch.ones_like(
+                     proposer_output.output_ids,
+                     dtype=torch.long,
+                     device=verifier_input.attention_mask.device
+                    )],
+                dim=-1
+            )
 
             past_key_values = verifier_input.past_key_values
-
-        if self.benchmark_time:
-            self.prepare_input_time += synchronize_time() - start
 
         return InputForCasualLm(input_ids, attention_mask, past_key_values)
 
@@ -145,7 +156,7 @@ class Verifier:
 
     def print_time(self):
         if self.benchmark_time:
-            print(f"[Verifier] prompt phase: {self.verify_times[0]}, "
-                  f"decode phase: {np.median(self.verify_times[1:])}, ",
+            print(f"[Verifier] prompt phase: {self.verify_time[0]}, "
+                  f"decode phase: {np.median(self.verify_time[1:])}, ",
                   f"adjust time: {self.adjust_input_time}, ",
                   f"prepare input time: {self.prepare_input_time}")
