@@ -1,4 +1,4 @@
-from .common import InputForCasualLm, OutputForCasualLm
+from .common import InputForCasualLm, OutputForCasualLm, speculative_sample
 from .logger import setup_logger
 from .proposer import ModelWithCacheProposer
 from .utils import get_softmax_func
@@ -11,4 +11,5 @@ __all__ = [
     "InputForCasualLm",
     "OutputForCasualLm",
     "get_softmax_func",
+    "speculative_sample",
     ]

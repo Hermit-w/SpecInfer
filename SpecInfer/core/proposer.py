@@ -168,6 +168,12 @@ class ModelWithCacheProposer(Proposer):
                 assert len(inputs) == 1, f"Expected bs=1, but get {len(inputs)}"
                 inputs = inputs[0]
 
+        use_distributed = False
+        try:
+            use_distributed = torch.distributed.is_initialized()
+        except Exception:
+            use_distributed = False
+
         propose_tokens_list: list = []
         propose_logits_list: list = []
         propose_distributions_list: list = []
@@ -196,21 +202,33 @@ class ModelWithCacheProposer(Proposer):
             
             next_token_logits = next_token_logits_[:, -1, :]
             distribution = sample_method(next_token_logits)
-            next_token_id = torch.multinomial(distribution, num_samples=1)
+            
+            if use_distributed:
+                next_token_id = torch.empty((input_ids.shape[0], 1), dtype=input_ids.dtype, device=input_ids.device)
+                if rank == 0:
+                    next_token_id = torch.multinomial(distribution, num_samples=1)
+                torch.distributed.broadcast(next_token_id, src=0)
+            else:
+                next_token_id = torch.multinomial(distribution, num_samples=1)
 
-            propose_logits_list.append(next_token_logits)
-            propose_distributions_list.append(distribution)
+
+            propose_logits_list.append(next_token_logits.unsqueeze(1))
+            propose_distributions_list.append(distribution.unsqueeze(1))
             propose_tokens_list.append(next_token_id)
 
-            if next_token_id.item() == self.tokenizer.eos_token_id:
+            # Avoid calling .item() on CUDA tensors to prevent implicit
+            # host-device synchronization which can interfere with
+            # distributed runs. Use tensor comparison instead.
+            eos_mask = (next_token_id == self.tokenizer.eos_token_id)
+            if eos_mask.any():
                 generated_len = i + 1
                 logger.info(f"Stop at step {generated_len} because of eos")
                 break
             
             input_ids = next_token_id
         propose_tokens = torch.cat(propose_tokens_list, dim=-1)
-        propose_logits = torch.cat(propose_logits_list, dim=0)
-        propose_distributions = torch.cat(propose_distributions_list, dim=0)
+        propose_logits = torch.cat(propose_logits_list, dim=1)
+        propose_distributions = torch.cat(propose_distributions_list, dim=1)
 
         return OutputForCasualLm(
             generated_len,

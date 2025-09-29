@@ -23,9 +23,28 @@ class InputForCasualLm:
         self,
         device: "DeviceLikeType"
     ) -> "InputForCasualLm":
-        self.input_ids = self.input_ids.to(device)
-        self.attention_mask = self.attention_mask.to(device)
-        return self
+        _input_ids = self.input_ids.to(device)
+        _attention_mask = self.attention_mask.to(device)
+        # Try to move past_key_values to device if present. Some Cache
+        # implementations provide a .to(device) method; if not, keep as-is.
+        _past = None
+        if self.past_key_values is not None:
+            to_fn = getattr(self.past_key_values, "to", None)
+            if callable(to_fn):
+                try:
+                    _past = to_fn(device)
+                except Exception:
+                    # Fallback: leave past_key_values as-is (may require
+                    # caller to handle device placement).
+                    _past = self.past_key_values
+            else:
+                _past = self.past_key_values
+
+        return InputForCasualLm(
+            _input_ids,
+            _attention_mask,
+            _past,
+        )
 
     @classmethod
     def from_prompt(
@@ -39,6 +58,13 @@ class InputForCasualLm:
             inputs['attention_mask'],
             None,
         )
+    
+    def __repr__(self):
+        return f"""InputForCasualLm:
+               \tinput_ids: {self.input_ids.shape}
+               \tattention_mask: {self.attention_mask.shape}
+               \tpast_key_values: {'present' if self.past_key_values is not None else 'none'}
+               """
 
 @dataclass
 class OutputForCasualLm:
@@ -48,11 +74,20 @@ class OutputForCasualLm:
     output_distribution: torch.Tensor
     past_key_values: Optional[transformers.Cache]
 
+    def __repr__(self):
+        return f"""OutputForCasualLm: 
+               \tgenerated_length: {self.generated_length}
+               \toutput_ids: {self.output_ids.shape if self.output_ids is not None else 'none'}
+               \toutput_logits: {self.output_logits.shape}
+               \toutput_distribution: {self.output_distribution.shape}
+               \tpast_key_values: {'present' if self.past_key_values is not None else 'none'}
+               """
+
 
 def target_sample_from_distribution(
-        target_distribution: torch.Tensor,
-        draft_distribution: torch.Tensor
-        ) -> torch.Tensor:
+    target_distribution: torch.Tensor,
+    draft_distribution: torch.Tensor
+) -> torch.Tensor:
     diff_distribution = target_distribution - draft_distribution
     diff_distribution = torch.max(diff_distribution,
                                   torch.zeros_like(diff_distribution))
@@ -66,6 +101,70 @@ def target_sample_from_distribution(
     diff_distribution = diff_distribution / \
         diff_distribution.sum(dim=-1, keepdim=True)
     return torch.multinomial(diff_distribution, num_samples=1).squeeze(-1)
+
+
+def speculative_sample(
+    proposer_output: OutputForCasualLm,
+    verifier_output: OutputForCasualLm,
+) -> torch.Tensor:
+    assert proposer_output.output_ids is not None, "The proposer's output contains None ids"
+    length = proposer_output.generated_length
+    verifier_distribution = verifier_output.output_distribution[:, -length:, :]
+    proposer_distribution = proposer_output.output_distribution
+    accept_tokens: list[torch.Tensor] = []
+    # Pre-generate synchronized random numbers for accept/reject decisions.
+    # If torch.distributed is initialized, create on rank 0 and broadcast to all ranks
+    # to ensure consistent randomness across processes.
+    use_distributed = False
+    try:
+        use_distributed = torch.distributed.is_initialized()
+    except Exception:
+        use_distributed = False
+
+    # sample_ratio has shape [batch_size]
+    # We'll prepare a random tensor of shape [length, batch_size]
+    device = proposer_output.output_ids.device
+    if use_distributed:
+        # create on CPU to simplify cross-device broadcasting, then move to device when used
+        rand_tensor = torch.empty(length, dtype=proposer_distribution.dtype, device=device)
+        if rank == 0:
+            # fill random values on rank 0
+            rand_tensor.uniform_(0.0, 1.0)
+        # broadcast from rank 0 to all processes
+        torch.distributed.broadcast(rand_tensor, src=0)
+    else:
+        rand_tensor = torch.rand(length, device=device, dtype=proposer_distribution.dtype)
+
+    for i in range(length):
+        # Accept-Reject step
+        logger.debug(f"Speculative sampling step {i}")
+        logger.debug(f"Proposer token id: {proposer_output.output_ids[:, i]}")
+        logger.debug(f"Proposer distribution: {proposer_distribution[:, i, proposer_output.output_ids[:, i]]}")
+        logger.debug(f"Verifier distribution: {verifier_distribution[:, i, proposer_output.output_ids[:, i]]}")
+        sample_ratio = verifier_distribution[:, i, proposer_output.output_ids[0, i]] / proposer_distribution[:, i, proposer_output.output_ids[0, i]]
+        sample_ratio = torch.min(sample_ratio,
+                                 torch.ones_like(sample_ratio))
+        rs = rand_tensor[i]
+        logger.debug(f"Sample ratio: {sample_ratio}")
+        logger.debug(f"Random value: {rs}")
+        if rs < sample_ratio:
+            logger.debug(f"Accept token {proposer_output.output_ids[:, i].item()}")
+            accept_tokens.append(proposer_output.output_ids[:, i])
+        else:
+            accept_tokens.append(target_sample_from_distribution(
+                verifier_distribution[:, i, :],
+                proposer_distribution[:, i, :]
+            ))
+            logger.debug(f"Reject token {proposer_output.output_ids[:, i].item()}")
+            break
+    else:
+        logger.debug("All tokens accepted")
+        accept_tokens.append(torch.multinomial(verifier_distribution[:, -1, :], num_samples=1).squeeze(-1))
+    # accept_len = len(accept_tokens)
+    # new_token = target_sample_from_distribution(verifier_distribution[:, accept_len, :], proposer_distribution[:, accept_len, :])
+    # accept_tokens.append(new_token)
+
+    return torch.cat(accept_tokens, dim=-1)
 
 
 def synchronize_time() -> float:

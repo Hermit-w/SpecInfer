@@ -9,4 +9,5 @@ __all__ = [
     "InputForCasualLm",
     "OutputForCasualLm",
     "get_softmax_func",
+    "speculative_sample",
     ]
