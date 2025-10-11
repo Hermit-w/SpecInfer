@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 rank = int(os.environ.get("RANK", 0))
 
+
 class Verifier:
     def __init__(
         self,
@@ -55,8 +56,8 @@ class Verifier:
         token_logits = outputs.logits
         propose_len = inputs.input_ids.shape[1]
         if token_logits is None:
-            logger.error(f"The logits returned by model is None.")
-            raise ValueError(f"The logits in the output is None.")
+            logger.error("The logits returned by model is None.")
+            raise ValueError("The logits in the output is None.")
         logits = token_logits[:, -propose_len:, :]
         distribution = sample_method(logits)
 
@@ -70,7 +71,6 @@ class Verifier:
             distribution,
             outputs.past_key_values
         )
-
 
     @classmethod
     def prepare_input(
@@ -88,11 +88,12 @@ class Verifier:
             )
             # concatenate prompt masks with proposed token masks
             attention_mask = torch.cat(
-                [verifier_input.attention_mask,
-                 torch.ones_like(
-                     proposer_output.output_ids,
-                     dtype=torch.long,
-                     device=verifier_input.attention_mask.device
+                [
+                    verifier_input.attention_mask,
+                    torch.ones_like(
+                        proposer_output.output_ids,
+                        dtype=torch.long,
+                        device=verifier_input.attention_mask.device
                     )
                 ],
                 dim=-1
@@ -105,12 +106,14 @@ class Verifier:
                 dim=-1
             )
             attention_mask = torch.cat(
-                [verifier_input.attention_mask,
-                 torch.ones_like(
-                     proposer_output.output_ids,
-                     dtype=torch.long,
-                     device=verifier_input.attention_mask.device
-                    )],
+                [
+                    verifier_input.attention_mask,
+                    torch.ones_like(
+                        proposer_output.output_ids,
+                        dtype=torch.long,
+                        device=verifier_input.attention_mask.device
+                    )
+                ],
                 dim=-1
             )
 
@@ -128,23 +131,18 @@ class Verifier:
             start = synchronize_time()
 
         n_matches = accept_token_ids.shape[1]
-        if str(self.model.__class__.__name__) in ["GPTBigCodeForCausalLM"]:
-            verifier_generated_len = verifier_output.past_key_values[0].shape[-2] - (
-                verifier_output.generated_len - 1) + n_matches
-            verifier_key_values = crop_mqa_past_key_values(
-                verifier_output.past_key_values, verifier_generated_len - 1)
-        else:
-            verifier_generated_len = verifier_output.past_key_values[0][0].shape[2] - (
-                verifier_output.generated_len - 1) + n_matches
+        
+        verifier_generated_len = verifier_output.past_key_values[0][0].shape[2] - (
+            verifier_output.generated_len - 1) + n_matches
 
-            verifier_key_values = crop_past_key_values(
-                verifier_output.past_key_values, verifier_generated_len - 1)
+        verifier_key_values = crop_past_key_values(
+            verifier_output.past_key_values, verifier_generated_len - 1)
 
-            verifier_attn_masks = verifier_input.attention_mask[:,
-                                                                :verifier_generated_len]
-            if verifier_attn_masks.shape[1] < verifier_generated_len:
-                verifier_attn_masks = torch.cat([verifier_attn_masks,
-                                                torch.ones(verifier_attn_masks.shape[0], 1, dtype=torch.long, device="cuda")], dim=-1)
+        verifier_attn_masks = verifier_input.attention_mask[:,
+                                                            :verifier_generated_len]
+        if verifier_attn_masks.shape[1] < verifier_generated_len:
+            verifier_attn_masks = torch.cat([verifier_attn_masks,
+                                            torch.ones(verifier_attn_masks.shape[0], 1, dtype=torch.long, device="cuda")], dim=-1)
 
         if self.benchmark_time:
             self.adjust_input_time += synchronize_time() - start

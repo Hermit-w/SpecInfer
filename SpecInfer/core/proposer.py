@@ -5,10 +5,9 @@ from typing import TYPE_CHECKING, Callable, Union
 
 import numpy as np
 import torch
-import transformers
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
-from .common import InputForCasualLm, OutputForCasualLm, synchronize_time
+from SpecInfer.core.common import InputForCasualLm, OutputForCasualLm, synchronize_time
 
 if TYPE_CHECKING:
     from transformers import PreTrainedTokenizerBase
@@ -17,6 +16,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 rank = int(os.environ.get("RANK", 0))
+
 
 class Proposer(ABC):
     def __init__(
@@ -113,37 +113,6 @@ class RandomProposer(Proposer):
         raise NotImplementedError
 
 
-class ModelProposer(Proposer):
-    def __init__(
-        self,
-        benchmark_time: bool,
-        model: "_BaseModelWithGenerate",
-        tokenizer: "PreTrainedTokenizerBase",
-    ):
-        super().__init__(benchmark_time)
-        self.model: "_BaseModelWithGenerate" = model
-        self.tokenizer: "PreTrainedTokenizerBase" = tokenizer
-
-    def propose_impl(
-        self,
-        input,
-        n,
-        sample_method
-    ):
-        if input.input_ids.shape[0] > 1:
-            raise NotImplementedError(
-                "Not implement for batch_size > 1 in evaluation")
-        raise NotImplementedError
-
-    def adjust_input_impl(
-        self,
-        accept_token_ids,
-        proposer_input,
-        proposer_output
-    ):
-        raise NotImplementedError
-
-
 class ModelWithCacheProposer(Proposer):
     def __init__(
         self,
@@ -191,7 +160,17 @@ class ModelWithCacheProposer(Proposer):
 
             next_token_logits_ = outputs.logits
             past_key_values = outputs.past_key_values
-            attention_mask = torch.cat([attention_mask, torch.ones((attention_mask.shape[0], 1), dtype=attention_mask.dtype, device=attention_mask.device)], dim=-1)
+            attention_mask = torch.cat(
+                [
+                    attention_mask,
+                    torch.ones(
+                        (attention_mask.shape[0], 1),
+                        dtype=attention_mask.dtype,
+                        device=attention_mask.device
+                    )
+                ],
+                dim=-1
+            )
 
             if next_token_logits_ is None:
                 logger.error(
@@ -199,10 +178,10 @@ class ModelWithCacheProposer(Proposer):
                     "There is None in Model's outputs"
                     )
                 raise ValueError
-            
+
             next_token_logits = next_token_logits_[:, -1, :]
             distribution = sample_method(next_token_logits)
-            
+
             if use_distributed:
                 next_token_id = torch.empty((input_ids.shape[0], 1), dtype=input_ids.dtype, device=input_ids.device)
                 if rank == 0:
@@ -210,7 +189,6 @@ class ModelWithCacheProposer(Proposer):
                 torch.distributed.broadcast(next_token_id, src=0)
             else:
                 next_token_id = torch.multinomial(distribution, num_samples=1)
-
 
             propose_logits_list.append(next_token_logits.unsqueeze(1))
             propose_distributions_list.append(distribution.unsqueeze(1))
@@ -224,7 +202,7 @@ class ModelWithCacheProposer(Proposer):
                 generated_len = i + 1
                 logger.info(f"Stop at step {generated_len} because of eos")
                 break
-            
+
             input_ids = next_token_id
         propose_tokens = torch.cat(propose_tokens_list, dim=-1)
         propose_logits = torch.cat(propose_logits_list, dim=1)
@@ -248,8 +226,11 @@ class ModelWithCacheProposer(Proposer):
             proposer_input.input_ids.shape[0], 1
         )
         proposer_attn_masks = torch.cat(
-            [proposer_input.attention_mask,
-             torch.ones_like(proposer_input_ids, dtype=torch.long)], dim=-1
+            [
+                proposer_input.attention_mask,
+                torch.ones_like(proposer_input_ids, dtype=torch.long)
+            ],
+            dim=-1
         )
         past_key_values = proposer_output.past_key_values
 

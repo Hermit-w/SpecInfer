@@ -1,13 +1,17 @@
 import copy
 import logging
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import torch
-import transformers
 
-from .common import InputForCasualLm, OutputForCasualLm, synchronize_time
-from .proposer import ModelProposer, ModelWithCacheProposer
+from .common import InputForCasualLm, synchronize_time
+from .proposer import ModelWithCacheProposer
 from .verifier import Verifier
+
+if TYPE_CHECKING:
+    from transformers import PreTrainedTokenizerBase
+    from transformers.models.auto.modeling_auto import _BaseModelWithGenerate
 
 logger = logging.getLogger(__name__)
 
@@ -26,35 +30,27 @@ class GeneratorOutput:
 class SpecGenerator:
     def __init__(
         self,
-        draft_model: transformers.PreTrainedModel,
-        target_model: transformers.PreTrainedModel,
-        tokenizer: transformers.PreTrainedTokenizerBase,
+        draft_model: "_BaseModelWithGenerate",
+        target_model: "_BaseModelWithGenerate",
+        tokenizer: "PreTrainedTokenizerBase",
         max_propose_num: int,
         use_cache: bool,
         benchmark_time: bool = False,
     ):
-        self.draft_model: transformers.PreTrainedModel = draft_model
-        self.target_model: transformers.PreTrainedModel = target_model
-        self.tokenizer: transformers.PreTrainedTokenizerBase = tokenizer
+        self.draft_model: "_BaseModelWithGenerate" = draft_model
+        self.target_model: "_BaseModelWithGenerate" = target_model
+        self.tokenizer: "PreTrainedTokenizerBase" = tokenizer
         self.max_propose_num: int = max_propose_num
 
         # metrics
         self.benchmark_time: bool = benchmark_time
         self.generation_time: list[float] = []
 
-        self.proposer: ModelProposer | ModelWithCacheProposer
-        if use_cache:
-            self.proposer = ModelWithCacheProposer(
-                benchmark_time,
-                draft_model,
-                tokenizer
-            )
-        else:
-            self.proposer = ModelProposer(
-                benchmark_time,
-                draft_model,
-                tokenizer
-            )
+        self.proposer = ModelWithCacheProposer(
+            draft_model,
+            tokenizer,
+            benchmark_time,
+        )
         self.verifier = Verifier(
             target_model,
             tokenizer,
