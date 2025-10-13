@@ -30,10 +30,10 @@ class Proposer(ABC):
 
     def propose(
         self,
-        inputs: Union[InputForCasualLm, list[InputForCasualLm]],
+        inputs: InputForCasualLm,
         n: int,
         sample_method: Callable[[torch.Tensor], torch.Tensor],
-    ) -> Union[OutputForCasualLm, list[OutputForCasualLm]]:
+    ) -> OutputForCasualLm:
         if self.benchmark_time:
             start = synchronize_time()
 
@@ -48,10 +48,10 @@ class Proposer(ABC):
     @abstractmethod
     def propose_impl(
         self,
-        inputs: Union[InputForCasualLm, list[InputForCasualLm]],
+        inputs: InputForCasualLm,
         n: int,
         sample_method: Callable[[torch.Tensor], torch.Tensor]
-    ) -> Union[OutputForCasualLm, list[OutputForCasualLm]]:
+    ) -> OutputForCasualLm:
         raise NotImplementedError
 
     def adjust_input(
@@ -91,28 +91,6 @@ class Proposer(ABC):
                         f" adjust time: {self.adjust_time}")
 
 
-class RandomProposer(Proposer):
-    def __init__(self, benchmark_time: bool):
-        super().__init__(benchmark_time)
-
-    def propose_impl(
-        self,
-        input,
-        n: int,
-        sample_method: Callable[[torch.Tensor], torch.Tensor],
-    ) -> OutputForCasualLm:
-        raise NotImplementedError
-        return OutputForCasualLm(1, torch.randint(0, 32000, (1, 16), device='cuda'), None)
-
-    def adjust_input_impl(
-        self,
-        accept_token_ids: torch.Tensor,
-        proposer_input: InputForCasualLm,
-        proposer_output: OutputForCasualLm,
-    ) -> InputForCasualLm:
-        raise NotImplementedError
-
-
 class ModelWithCacheProposer(Proposer):
     def __init__(
         self,
@@ -129,14 +107,7 @@ class ModelWithCacheProposer(Proposer):
         inputs,
         n,
         sample_method
-    ) -> Union[OutputForCasualLm, list[OutputForCasualLm]]:
-        if isinstance(inputs, list):
-            if len(inputs) > 1:
-                raise NotImplementedError("Only support bs=1 in current version")
-            else:
-                assert len(inputs) == 1, f"Expected bs=1, but get {len(inputs)}"
-                inputs = inputs[0]
-
+    ):
         use_distributed = False
         try:
             use_distributed = torch.distributed.is_initialized()
@@ -222,9 +193,7 @@ class ModelWithCacheProposer(Proposer):
         proposer_input,
         proposer_output
     ):
-        proposer_input_ids = accept_token_ids.tile(
-            proposer_input.input_ids.shape[0], 1
-        )
+        proposer_input_ids = accept_token_ids
         proposer_attn_masks = torch.cat(
             [
                 proposer_input.attention_mask,
@@ -234,10 +203,11 @@ class ModelWithCacheProposer(Proposer):
         )
         past_key_values = proposer_output.past_key_values
 
-        total_generated_length = past_key_values.get_seq_length()
+        logger.debug(f"Original kv length: {past_key_values.get_seq_length()}")
         past_key_values.crop(
-            total_generated_length - proposer_output.generated_length
+            proposer_attn_masks.shape[1] - proposer_input_ids.shape[1]
         )
+        logger.debug(f"Crop to length: {past_key_values.get_seq_length()}")
         return InputForCasualLm(
             proposer_input_ids,
             proposer_attn_masks,

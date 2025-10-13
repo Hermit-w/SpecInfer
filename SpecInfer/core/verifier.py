@@ -34,50 +34,12 @@ class Verifier:
 
     def verify(
         self,
-        inputs: InputForCasualLm,
+        verifier_input: InputForCasualLm,
+        proposer_output: OutputForCasualLm,
         sample_method: Callable[[torch.Tensor], torch.Tensor],
     ) -> OutputForCasualLm:
         if self.benchmark_time:
             start = synchronize_time()
-
-        input_ids = inputs.input_ids.to(self.model.device)
-        attention_mask = inputs.attention_mask.to(self.model.device)
-        past_key_values = inputs.past_key_values
-        # if past_key_values is not None:
-        #     past_key_values = past_key_values.to(self.model.device)
-
-        outputs: CausalLMOutputWithPast = self.model(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            past_key_values=past_key_values,
-            use_cache=True
-        )
-
-        token_logits = outputs.logits
-        propose_len = inputs.input_ids.shape[1]
-        if token_logits is None:
-            logger.error("The logits returned by model is None.")
-            raise ValueError("The logits in the output is None.")
-        logits = token_logits[:, -propose_len:, :]
-        distribution = sample_method(logits)
-
-        if self.benchmark_time:
-            self.verify_time.append(synchronize_time() - start)
-        # output logits/distribution has shape [# of proposed tokens, vocab_size]
-        return OutputForCasualLm(
-            propose_len,
-            None,
-            logits,
-            distribution,
-            outputs.past_key_values
-        )
-
-    @classmethod
-    def prepare_input(
-        cls,
-        proposer_output: OutputForCasualLm,
-        verifier_input: InputForCasualLm,
-    ) -> InputForCasualLm:
         assert proposer_output.output_ids is not None, "The proposer's output contains None ids"
 
         if verifier_input.past_key_values is None:
@@ -119,35 +81,63 @@ class Verifier:
 
             past_key_values = verifier_input.past_key_values
 
-        return InputForCasualLm(input_ids, attention_mask, past_key_values)
+        if self.benchmark_time:
+            end = synchronize_time()
+            self.prepare_input_time += (end - start)
+            start = end
+
+        outputs: CausalLMOutputWithPast = self.model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            past_key_values=past_key_values,
+            use_cache=True
+        )
+        token_logits = outputs.logits
+        propose_len = proposer_output.generated_length
+        if token_logits is None:
+            logger.error("The logits returned by model is None.")
+            raise ValueError("The logits in the output is None.")
+        logits = token_logits[:, -propose_len:, :]
+        distribution = sample_method(logits)
+
+        if self.benchmark_time:
+            self.verify_time.append(synchronize_time() - start)
+        # output logits/distribution has shape [# of proposed tokens, vocab_size]
+        return OutputForCasualLm(
+            propose_len,
+            None,
+            logits,
+            distribution,
+            outputs.past_key_values
+        )
 
     def adjust_input(
         self,
         accept_token_ids: torch.Tensor,
-        verifier_input: InputForCasualLm,
         verifier_output: OutputForCasualLm
     ) -> InputForCasualLm:
         if self.benchmark_time:
             start = synchronize_time()
 
-        n_matches = accept_token_ids.shape[1]
-        
-        verifier_generated_len = verifier_output.past_key_values[0][0].shape[2] - (
-            verifier_output.generated_len - 1) + n_matches
+        bs = accept_token_ids.shape[0]
+        n_matches = accept_token_ids.shape[1] - 1
+        logger.debug(f"Accept {n_matches} tokens")
 
-        verifier_key_values = crop_past_key_values(
-            verifier_output.past_key_values, verifier_generated_len - 1)
+        verifier_key_values = verifier_output.past_key_values
 
-        verifier_attn_masks = verifier_input.attention_mask[:,
-                                                            :verifier_generated_len]
-        if verifier_attn_masks.shape[1] < verifier_generated_len:
-            verifier_attn_masks = torch.cat([verifier_attn_masks,
-                                            torch.ones(verifier_attn_masks.shape[0], 1, dtype=torch.long, device="cuda")], dim=-1)
+        verifier_valid_len = verifier_key_values.get_seq_length() - verifier_output.generated_length + n_matches \
+            if verifier_key_values is not None else 0
+
+        logger.debug(f"Original kv length: {verifier_key_values.get_seq_length() if verifier_key_values is not None else 0}")
+        verifier_key_values.crop(verifier_valid_len) if verifier_key_values is not None else None
+        logger.debug(f"Crop to length: {verifier_key_values.get_seq_length() if verifier_key_values is not None else 0}")
+        verifier_attn_masks = torch.ones((bs, verifier_valid_len + 1), dtype=torch.int64, device=self.model.device)
 
         if self.benchmark_time:
             self.adjust_input_time += synchronize_time() - start
+
         return InputForCasualLm(
-            accept_token_ids[:, -1],
+            accept_token_ids[:, -1].unsqueeze(1),
             verifier_attn_masks,
             verifier_key_values
         )
