@@ -61,10 +61,10 @@ class InputForCasualLm:
     
     def __repr__(self):
         return f"""InputForCasualLm:
-               \tinput_ids: {self.input_ids.shape}
-               \tattention_mask: {self.attention_mask.shape}
-               \tpast_key_values: {'present' if self.past_key_values is not None else 'none'}
-               """
+                \tinput_ids: {self.input_ids.shape}
+                \tattention_mask: {self.attention_mask.shape}
+                \tpast_key_values: {self.past_key_values.get_seq_length() if self.past_key_values is not None else 'none'}
+                """
 
 @dataclass
 class OutputForCasualLm:
@@ -76,12 +76,12 @@ class OutputForCasualLm:
 
     def __repr__(self):
         return f"""OutputForCasualLm: 
-               \tgenerated_length: {self.generated_length}
-               \toutput_ids: {self.output_ids.shape if self.output_ids is not None else 'none'}
-               \toutput_logits: {self.output_logits.shape}
-               \toutput_distribution: {self.output_distribution.shape}
-               \tpast_key_values: {'present' if self.past_key_values is not None else 'none'}
-               """
+                \tgenerated_length: {self.generated_length}
+                \toutput_ids: {self.output_ids.shape if self.output_ids is not None else 'none'}
+                \toutput_logits: {self.output_logits.shape}
+                \toutput_distribution: {self.output_distribution.shape}
+                \tpast_key_values: {self.past_key_values.get_seq_length() if self.past_key_values is not None else 'none'}
+                """
 
 
 def target_sample_from_distribution(
@@ -89,8 +89,10 @@ def target_sample_from_distribution(
     draft_distribution: torch.Tensor
 ) -> torch.Tensor:
     diff_distribution = target_distribution - draft_distribution
-    diff_distribution = torch.max(diff_distribution,
-                                  torch.zeros_like(diff_distribution))
+    diff_distribution = torch.max(
+        diff_distribution,
+        torch.zeros_like(diff_distribution)
+    )
     if (diff_distribution.sum(dim=-1, keepdim=True) == 0).any():
         diff_distribution = torch.where(
             diff_distribution == 0,
@@ -100,7 +102,10 @@ def target_sample_from_distribution(
         logger.warning("Distribution contains zero values")
     diff_distribution = diff_distribution / \
         diff_distribution.sum(dim=-1, keepdim=True)
-    return torch.multinomial(diff_distribution, num_samples=1).squeeze(-1)
+    logger.debug(diff_distribution.shape)
+    sample_tokens = torch.multinomial(diff_distribution, num_samples=1)
+    logger.debug(sample_tokens.shape)
+    return sample_tokens
 
 
 def speculative_sample(
@@ -109,6 +114,7 @@ def speculative_sample(
 ) -> torch.Tensor:
     assert proposer_output.output_ids is not None, "The proposer's output contains None ids"
     length = proposer_output.generated_length
+    bs = verifier_output.output_distribution.shape[0]
     verifier_distribution = verifier_output.output_distribution[:, -length:, :]
     proposer_distribution = proposer_output.output_distribution
     accept_tokens: list[torch.Tensor] = []
@@ -142,28 +148,45 @@ def speculative_sample(
         logger.debug(f"Proposer distribution: {proposer_distribution[:, i, proposer_output.output_ids[:, i]]}")
         logger.debug(f"Verifier distribution: {verifier_distribution[:, i, proposer_output.output_ids[:, i]]}")
         sample_ratio = verifier_distribution[:, i, proposer_output.output_ids[0, i]] / proposer_distribution[:, i, proposer_output.output_ids[0, i]]
-        sample_ratio = torch.min(sample_ratio,
-                                 torch.ones_like(sample_ratio))
+        sample_ratio = torch.min(
+            sample_ratio,
+            torch.ones_like(sample_ratio)
+        )
         rs = rand_tensor[i]
         logger.debug(f"Sample ratio: {sample_ratio}")
         logger.debug(f"Random value: {rs}")
         if rs < sample_ratio:
-            logger.debug(f"Accept token {proposer_output.output_ids[:, i].item()}")
+            logger.debug(f"Accept token {proposer_output.output_ids[:, i]}")
             accept_tokens.append(proposer_output.output_ids[:, i])
         else:
-            accept_tokens.append(target_sample_from_distribution(
-                verifier_distribution[:, i, :],
-                proposer_distribution[:, i, :]
-            ))
-            logger.debug(f"Reject token {proposer_output.output_ids[:, i].item()}")
+            if use_distributed:
+                sample_tokens = torch.empty((bs, 1), dtype=torch.int64, device=device)
+                if rank == 0:
+                    sample_tokens = target_sample_from_distribution(
+                        verifier_distribution[:, i, :],
+                        proposer_distribution[:, i, :]
+                    )
+                torch.distributed.broadcast(sample_tokens, src=0)
+            else:
+                sample_tokens = target_sample_from_distribution(
+                    verifier_distribution[:, i, :],
+                    proposer_distribution[:, i, :]
+                )
+            accept_tokens.append(sample_tokens)
+            logger.debug(f"Reject token {proposer_output.output_ids[:, i]}")
+            logger.debug(f"Sample token {sample_tokens}")
             break
     else:
         logger.debug("All tokens accepted")
-        accept_tokens.append(torch.multinomial(verifier_distribution[:, -1, :], num_samples=1).squeeze(-1))
-    # accept_len = len(accept_tokens)
-    # new_token = target_sample_from_distribution(verifier_distribution[:, accept_len, :], proposer_distribution[:, accept_len, :])
-    # accept_tokens.append(new_token)
-
+        if use_distributed:
+            sample_tokens = torch.empty((bs, 1), dtype=torch.int64, device=device)
+            if rank == 0:
+                sample_tokens = torch.multinomial(verifier_distribution[:, -1, :], num_samples=1).squeeze(-1)
+            torch.distributed.broadcast(sample_tokens, src=0)
+        else:
+            sample_tokens = torch.multinomial(verifier_distribution[:, -1, :], num_samples=1).squeeze(-1)
+        accept_tokens.append(sample_tokens)
+        logger.debug(f"Sample token {sample_tokens}")
     return torch.cat(accept_tokens, dim=-1)
 
 
