@@ -7,6 +7,7 @@ from safetensors import safe_open
 
 INDEX_FILE = "model.safetensors.index.json"
 
+
 def read_param(model_name_or_path: str, output_file: Optional[str]):
     file_path = os.path.join(model_name_or_path, INDEX_FILE)
     all_shapes = {}
@@ -35,10 +36,11 @@ def read_param(model_name_or_path: str, output_file: Optional[str]):
     if output_file is not None:
         yaml.safe_dump(all_shapes, open(output_file, "w"), sort_keys=True)
 
+
 if __name__ == '__main__':
     prefix_name = "/export/home/lanliwei.1/models"
     model_name = "Qwen/Qwen3-0.6B"
     # model_name = "Qwen/Qwen3-30B-A3B-Instruct-2507"
     full_name = os.path.join(prefix_name, model_name)
     output_name = model_name.split("/")[1].lower() + ".yaml"
-    read_param(full_name, None)
+    read_param(full_name, output_name)

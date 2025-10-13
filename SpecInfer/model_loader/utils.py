@@ -3,14 +3,12 @@ import logging
 import os
 from typing import TYPE_CHECKING
 
+from deprecated.sphinx import deprecated
 from safetensors import safe_open
-from torch.distributed.tensor.parallel import (ColwiseParallel,
+from torch.distributed.tensor.parallel import (ColwiseParallel, ParallelStyle,
                                                RowwiseParallel,
                                                SequenceParallel)
-from transformers import AutoConfig
-from transformers import Qwen3MoeForCausalLM
-from torch.distributed.tensor.parallel import ParallelStyle
-from transformers import PretrainedConfig
+from transformers import AutoConfig, PretrainedConfig, Qwen3MoeForCausalLM
 
 if TYPE_CHECKING:
     pass
@@ -26,6 +24,7 @@ ALL_SUPPORTED_MODELS = [
 ]
 
 
+@deprecated("transformers have supported tensor parallel")
 def check_support_model(
     model_config: PretrainedConfig
 ) -> bool:
@@ -35,6 +34,8 @@ def check_support_model(
         logger.error(f"Supported models are listed here: {ALL_SUPPORTED_MODELS}")
     return True
 
+
+@deprecated("transformers have supported tensor parallel")
 def check_tensor_parallel_legality(
     model_config: PretrainedConfig,
     tp_size: int,
@@ -44,10 +45,11 @@ def check_tensor_parallel_legality(
     if num_q_heads % tp_size != 0 or num_kv_heads % tp_size != 0:
         logger.error(f"The number of attention heads can not split by tp={tp_size}")
         return False
-    
+
     return True
 
 
+@deprecated("transformers have supported tensor parallel")
 def read_weight_names(
     model_name_or_path: str,
 ) -> list[str]:
@@ -65,6 +67,7 @@ def read_weight_names(
     return weight_names
 
 
+@deprecated("transformers have supported tensor parallel")
 def get_tensor_parallel_plan(
     model_name_or_path: str,
     model_config: PretrainedConfig,

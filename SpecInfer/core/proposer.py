@@ -1,13 +1,14 @@
 import logging
 import os
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Callable, Union
+from typing import TYPE_CHECKING, Callable
 
 import numpy as np
 import torch
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
-from SpecInfer.core.common import InputForCasualLm, OutputForCasualLm, synchronize_time
+from SpecInfer.core.common import (InputForCasualLm, OutputForCasualLm,
+                                   synchronize_time)
 
 if TYPE_CHECKING:
     from transformers import PreTrainedTokenizerBase

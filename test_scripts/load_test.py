@@ -11,10 +11,12 @@ setup_logger(level="debug")
 
 model_path = "/export/home/lanliwei.1/models/Qwen/Qwen3-30B-A3B-Instruct-2507"
 
+
 def get_memory_usage(device):
     allocated = torch.cuda.memory_allocated(device) / 1024**2  
     reserved = torch.cuda.memory_reserved(device) / 1024**2   
     return allocated, reserved
+
 
 rank = 0
 device = torch.device(f"cuda:{rank}")

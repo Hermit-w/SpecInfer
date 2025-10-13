@@ -128,9 +128,9 @@ class Verifier:
         verifier_valid_len = verifier_key_values.get_seq_length() - verifier_output.generated_length + n_matches \
             if verifier_key_values is not None else 0
 
-        logger.debug(f"Original kv length: {verifier_key_values.get_seq_length() if verifier_key_values is not None else 0}")
+        logger.debug(f"Original kv length: {verifier_key_values.get_seq_length() if verifier_key_values is not None else 0}") # noqa
         verifier_key_values.crop(verifier_valid_len) if verifier_key_values is not None else None
-        logger.debug(f"Crop to length: {verifier_key_values.get_seq_length() if verifier_key_values is not None else 0}")
+        logger.debug(f"Crop to length: {verifier_key_values.get_seq_length() if verifier_key_values is not None else 0}") # noqa
         verifier_attn_masks = torch.ones((bs, verifier_valid_len + 1), dtype=torch.int64, device=self.model.device)
 
         if self.benchmark_time:

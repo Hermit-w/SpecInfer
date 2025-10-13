@@ -1,8 +1,8 @@
 import logging
+import os
 import time
 from dataclasses import dataclass
-from typing import Optional, Union, TYPE_CHECKING
-import os
+from typing import TYPE_CHECKING, Optional
 
 import torch
 import transformers
@@ -12,6 +12,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 rank = int(os.environ.get("RANK", 0))
+
 
 @dataclass
 class InputForCasualLm:
@@ -58,13 +59,17 @@ class InputForCasualLm:
             inputs['attention_mask'],
             None,
         )
-    
+
     def __repr__(self):
-        return f"""InputForCasualLm:
-                \tinput_ids: {self.input_ids.shape}
-                \tattention_mask: {self.attention_mask.shape}
-                \tpast_key_values: {self.past_key_values.get_seq_length() if self.past_key_values is not None else 'none'}
-                """
+        return (
+            f"InputForCasualLm:"
+            f"\tinput_ids: {self.input_ids.shape}"
+            f"\tattention_mask: {self.attention_mask.shape}"
+            f"\tpast_key_values: {
+                self.past_key_values.get_seq_length() if self.past_key_values is not None else 'none'
+            }"
+        )
+
 
 @dataclass
 class OutputForCasualLm:
@@ -75,13 +80,17 @@ class OutputForCasualLm:
     past_key_values: Optional[transformers.Cache]
 
     def __repr__(self):
-        return f"""OutputForCasualLm: 
-                \tgenerated_length: {self.generated_length}
-                \toutput_ids: {self.output_ids.shape if self.output_ids is not None else 'none'}
-                \toutput_logits: {self.output_logits.shape}
-                \toutput_distribution: {self.output_distribution.shape}
-                \tpast_key_values: {self.past_key_values.get_seq_length() if self.past_key_values is not None else 'none'}
-                """
+        return (
+            f"OutputForCasualLm:"
+            f"\tgenerated_length: {self.generated_length}"
+            f"\toutput_ids: {self.output_ids.shape if self.output_ids is not None else 'none'}"
+            f"\toutput_logits: {self.output_logits.shape}"
+            f"\toutput_distribution: {self.output_distribution.shape}"
+            f"\tpast_key_values: {
+                self.past_key_values.get_seq_length()
+                if self.past_key_values is not None else 'none'
+            }"
+        )
 
 
 def target_sample_from_distribution(
@@ -147,7 +156,9 @@ def speculative_sample(
         logger.debug(f"Proposer token id: {proposer_output.output_ids[:, i]}")
         logger.debug(f"Proposer distribution: {proposer_distribution[:, i, proposer_output.output_ids[:, i]]}")
         logger.debug(f"Verifier distribution: {verifier_distribution[:, i, proposer_output.output_ids[:, i]]}")
-        sample_ratio = verifier_distribution[:, i, proposer_output.output_ids[0, i]] / proposer_distribution[:, i, proposer_output.output_ids[0, i]]
+        sample_ratio = \
+            verifier_distribution[:, i, proposer_output.output_ids[0, i]] \
+            / proposer_distribution[:, i, proposer_output.output_ids[0, i]]
         sample_ratio = torch.min(
             sample_ratio,
             torch.ones_like(sample_ratio)

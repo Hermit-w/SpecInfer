@@ -3,6 +3,7 @@ import os
 from typing import TYPE_CHECKING
 
 import transformers
+from deprecated.sphinx import deprecated
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
 if TYPE_CHECKING:
@@ -11,6 +12,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 rank = int(os.environ.get("RANK", 0))
+
 
 class ModelLoader:
     @classmethod
@@ -22,19 +24,17 @@ class ModelLoader:
         torch_dtype: str = "auto",
     ) -> "_BaseModelWithGenerate":
         config = AutoConfig.from_pretrained(model_name_or_path)
-        # Direct load will lead to error 
+        # Direct load will lead to error
         # Referring https://github.com/huggingface/transformers/issues/41092
         if hasattr(config, "num_key_value_heads"):
-            assert hasattr(config, "base_model_tp_plan"), f"Existing model: {config.architectures[0]} doesn't support tp"
+            if not hasattr(config, "base_model_tp_plan"):
+                raise ValueError(f"Existing model: {config.architectures[0]} doesn't support tp") # noqa
             if config.num_key_value_heads % tp_size != 0:
-                if rank == 0:
-                    logger.warning(f"Existing model has kv_heads={config.num_key_value_heads} while setting tp_size={tp_size}, which may lead to error")
+                logger.warning(f"Existing model has kv_heads={config.num_key_value_heads} while setting tp_size={tp_size}, which may lead to error") # noqa
                 if tp_size % config.num_key_value_heads != 0:
-                    if rank == 0:
-                        logger.error(f"Existing method doesn't support {config.architectures[0]} with tp_size={tp_size}")
-                    raise ValueError(f"Existing method doesn't support {config.architectures[0]} with tp_size={tp_size}")
-                if rank == 0:
-                    logger.warning("Try to pass our customize tp_plan to model")
+                    logger.error(f"Existing method doesn't support {config.architectures[0]} with tp_size={tp_size}")
+                    raise ValueError(f"Existing method doesn't support {config.architectures[0]} with tp_size={tp_size}") # noqa
+                logger.warning("Try to pass our customized tp_plan to model")
                 plan = config.base_model_tp_plan
                 # This is solution provided by core maintainer of transformers
                 # Referring https://github.com/huggingface/transformers/issues/40953#issuecomment-3311635988
@@ -70,7 +70,8 @@ class ModelLoader:
             torch_dtype=torch_dtype,
         )
         return model, tokenizer
-    
+
+    @deprecated("transformers have supported tensor parallel")
     @classmethod
     def _load_model_with_parallel(
         cls,
@@ -80,7 +81,7 @@ class ModelLoader:
         torch_dtype: str = "auto",
     ) -> "_BaseModelWithGenerate":
         raise NotImplementedError(
-            "This function is useless now since transformers have supported tensor parallel."
+            "This function is deprecated now since transformers have supported tensor parallel."
         )
         # logger.info(f"Loading model from {model_name_or_path} with tensor parallelism of size {tp_size}.")
         # config = AutoConfig.from_pretrained(model_name_or_path)

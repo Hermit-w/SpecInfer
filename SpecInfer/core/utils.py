@@ -1,5 +1,7 @@
-import torch
 from typing import Callable
+
+import torch
+
 from .common import synchronize_time
 
 

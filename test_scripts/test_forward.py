@@ -31,7 +31,7 @@ if __name__ == "__main__":
         prompt,
         tokenizer
     )
-    
+
     def sample_method(tensor: torch.Tensor) -> torch.Tensor:
         tensor = tensor / temperature
         return torch.nn.functional.softmax(tensor, dim=-1)
@@ -45,8 +45,7 @@ if __name__ == "__main__":
     if isinstance(outputs, list):
         assert len(outputs) == 1
         outputs = outputs[0]
-    
+
     if rank == 0:
         logger.info(prompt + "".join(tokenizer.batch_decode(outputs.output_ids)))
     torch.distributed.destroy_process_group()
-    
