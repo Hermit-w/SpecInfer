@@ -1,14 +1,14 @@
 import logging
 import os
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Union
 
 import transformers
-from deprecated.sphinx import deprecated
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
 if TYPE_CHECKING:
     # class for better type annotations
     from transformers.models.auto.modeling_auto import _BaseModelWithGenerate
+    from torch import dtype
 
 logger = logging.getLogger(__name__)
 rank = int(os.environ.get("RANK", 0))
@@ -21,7 +21,7 @@ class ModelLoader:
         model_name_or_path: str,
         tp_size: int = 1,
         *,
-        torch_dtype: str = "auto",
+        torch_dtype: Union[str, "dtype"] = "auto",
     ) -> "_BaseModelWithGenerate":
         config = AutoConfig.from_pretrained(model_name_or_path)
         # Direct load will lead to error
@@ -71,7 +71,6 @@ class ModelLoader:
         )
         return model, tokenizer
 
-    @deprecated("transformers have supported tensor parallel")
     @classmethod
     def _load_model_with_parallel(
         cls,
