@@ -11,6 +11,7 @@ if TYPE_CHECKING:
     from transformers.models.auto.modeling_auto import _BaseModelWithGenerate
 
 from .common import InputForCasualLm, OutputForCasualLm, synchronize_time
+from .utils import decode
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +81,8 @@ class Verifier:
             )
 
             past_key_values = verifier_input.past_key_values
-
+        assert input_ids.shape[1] > proposer_output.generated_length, "total input len should be larger than generated len" # noqa
+        logger.debug(f"Inputs of verifier now is {decode(self.tokenizer, input_ids)}")
         if self.benchmark_time:
             end = synchronize_time()
             self.prepare_input_time += (end - start)
@@ -97,7 +99,7 @@ class Verifier:
         if token_logits is None:
             logger.error("The logits returned by model is None.")
             raise ValueError("The logits in the output is None.")
-        logits = token_logits[:, -propose_len:, :]
+        logits = token_logits[:, -propose_len-1:, :]
         distribution = sample_method(logits)
 
         if self.benchmark_time:

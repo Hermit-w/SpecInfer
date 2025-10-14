@@ -131,6 +131,7 @@ class ModelWithCacheProposer(Proposer):
             )
 
             next_token_logits_ = outputs.logits
+            logger.debug(f"Original logits shape: {next_token_logits_.shape}")
             past_key_values = outputs.past_key_values
             attention_mask = torch.cat(
                 [

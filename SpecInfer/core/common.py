@@ -62,9 +62,9 @@ class InputForCasualLm:
 
     def __repr__(self):
         return (
-            f"InputForCasualLm:"
-            f"\tinput_ids: {self.input_ids.shape}"
-            f"\tattention_mask: {self.attention_mask.shape}"
+            f"InputForCasualLm:\n"
+            f"\tinput_ids: {self.input_ids.shape}\n"
+            f"\tattention_mask: {self.attention_mask.shape}\n"
             f"\tpast_key_values: {
                 self.past_key_values.get_seq_length() if self.past_key_values is not None else 'none'
             }"
@@ -81,11 +81,11 @@ class OutputForCasualLm:
 
     def __repr__(self):
         return (
-            f"OutputForCasualLm:"
-            f"\tgenerated_length: {self.generated_length}"
-            f"\toutput_ids: {self.output_ids.shape if self.output_ids is not None else 'none'}"
-            f"\toutput_logits: {self.output_logits.shape}"
-            f"\toutput_distribution: {self.output_distribution.shape}"
+            f"OutputForCasualLm:\n"
+            f"\tgenerated_length: {self.generated_length}\n"
+            f"\toutput_ids: {self.output_ids.shape if self.output_ids is not None else 'none'}\n"
+            f"\toutput_logits: {self.output_logits.shape}\n"
+            f"\toutput_distribution: {self.output_distribution.shape}\n"
             f"\tpast_key_values: {
                 self.past_key_values.get_seq_length()
                 if self.past_key_values is not None else 'none'
@@ -124,8 +124,9 @@ def speculative_sample(
     assert proposer_output.output_ids is not None, "The proposer's output contains None ids"
     length = proposer_output.generated_length
     bs = verifier_output.output_distribution.shape[0]
-    verifier_distribution = verifier_output.output_distribution[:, -length:, :]
+    verifier_distribution = verifier_output.output_distribution
     proposer_distribution = proposer_output.output_distribution
+    assert verifier_distribution.shape[1] == proposer_distribution.shape[1] + 1
     accept_tokens: list[torch.Tensor] = []
     # Pre-generate synchronized random numbers for accept/reject decisions.
     # If torch.distributed is initialized, create on rank 0 and broadcast to all ranks
@@ -167,8 +168,9 @@ def speculative_sample(
         logger.debug(f"Sample ratio: {sample_ratio}")
         logger.debug(f"Random value: {rs}")
         if rs < sample_ratio:
-            logger.debug(f"Accept token {proposer_output.output_ids[:, i]}")
-            accept_tokens.append(proposer_output.output_ids[:, i])
+            accept_token = proposer_output.output_ids[:, i].unsqueeze(1)
+            logger.debug(f"Accept token {accept_token}")
+            accept_tokens.append(accept_token)
         else:
             if use_distributed:
                 sample_tokens = torch.empty((bs, 1), dtype=torch.int64, device=device)
@@ -192,10 +194,10 @@ def speculative_sample(
         if use_distributed:
             sample_tokens = torch.empty((bs, 1), dtype=torch.int64, device=device)
             if rank == 0:
-                sample_tokens = torch.multinomial(verifier_distribution[:, -1, :], num_samples=1).squeeze(-1)
+                sample_tokens = torch.multinomial(verifier_distribution[:, -1, :], num_samples=1)
             torch.distributed.broadcast(sample_tokens, src=0)
         else:
-            sample_tokens = torch.multinomial(verifier_distribution[:, -1, :], num_samples=1).squeeze(-1)
+            sample_tokens = torch.multinomial(verifier_distribution[:, -1, :], num_samples=1)
         accept_tokens.append(sample_tokens)
         logger.debug(f"Sample token {sample_tokens}")
     return torch.cat(accept_tokens, dim=-1)

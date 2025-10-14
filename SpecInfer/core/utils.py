@@ -1,8 +1,11 @@
-from typing import Callable
+from typing import Callable, TYPE_CHECKING
 
 import torch
 
 from .common import synchronize_time
+
+if TYPE_CHECKING:
+    from transformers import PreTrainedTokenizerBase
 
 
 def get_softmax_func(temperature: float) -> Callable[[torch.Tensor], torch.Tensor]:
@@ -19,3 +22,7 @@ def benchmark_time(func: Callable) -> tuple[Callable, float]:
         return func(*args, **kwargs)
     end_time = synchronize_time()
     return inner_func, end_time - start_time
+
+
+def decode(tokenizer: "PreTrainedTokenizerBase", ids: torch.Tensor) -> str:
+    return "".join(tokenizer.batch_decode(ids))
