@@ -2,7 +2,7 @@ import logging
 import os
 import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Optional, Union
 
 import torch
 import transformers
@@ -50,9 +50,29 @@ class InputForCasualLm:
     @classmethod
     def from_prompt(
         cls,
-        prompt: str,
+        prompt: Optional[Union[str, list[str]]],
+        messages: Optional[Union[list[dict[str, str]], list[list[dict[str, str]]]]],
         tokenizer: transformers.PreTrainedTokenizerBase,
+        **kwargs,
     ) -> "InputForCasualLm":
+        if prompt is None and messages is None:
+            raise ValueError((
+                "prompt and messages are both None.\n"
+                "At least one should not be None."
+            ))
+        if prompt is not None and messages is not None:
+            raise ValueError((
+                "prompt and messages are both not None.\n"
+                "Only one should be passed."
+            ))
+
+        if messages is not None:
+            prompt = tokenizer.apply_chat_template(  # type: ignore[assignment]
+                messages,
+                tokenize=False,
+                add_generation_prompt=True
+            )
+
         inputs = tokenizer(prompt, return_tensors="pt")
         return InputForCasualLm(
             inputs['input_ids'],
@@ -120,7 +140,7 @@ def target_sample_from_distribution(
 def speculative_sample(
     proposer_output: OutputForCasualLm,
     verifier_output: OutputForCasualLm,
-) -> torch.Tensor:
+) -> tuple[torch.Tensor, list[float], int]:
     assert proposer_output.output_ids is not None, "The proposer's output contains None ids"
     length = proposer_output.generated_length
     bs = verifier_output.output_distribution.shape[0]
@@ -128,6 +148,8 @@ def speculative_sample(
     proposer_distribution = proposer_output.output_distribution
     assert verifier_distribution.shape[1] == proposer_distribution.shape[1] + 1
     accept_tokens: list[torch.Tensor] = []
+    alpha: list[float] = []
+    sample_steps = 0
     # Pre-generate synchronized random numbers for accept/reject decisions.
     # If torch.distributed is initialized, create on rank 0 and broadcast to all ranks
     # to ensure consistent randomness across processes.
@@ -153,6 +175,7 @@ def speculative_sample(
 
     for i in range(length):
         # Accept-Reject step
+        sample_steps += 1
         logger.debug(f"Speculative sampling step {i}")
         logger.debug(f"Proposer token id: {proposer_output.output_ids[:, i]}")
         logger.debug(f"Proposer distribution: {proposer_distribution[:, i, proposer_output.output_ids[:, i]]}")
@@ -160,6 +183,11 @@ def speculative_sample(
         sample_ratio = \
             verifier_distribution[:, i, proposer_output.output_ids[0, i]] \
             / proposer_distribution[:, i, proposer_output.output_ids[0, i]]
+        cur_alpha = torch.min(
+            verifier_distribution[:, i, proposer_output.output_ids[0, i]],
+            proposer_distribution[:, i, proposer_output.output_ids[0, i]]
+        ).item()
+        alpha.append(cur_alpha)
         sample_ratio = torch.min(
             sample_ratio,
             torch.ones_like(sample_ratio)
@@ -200,7 +228,7 @@ def speculative_sample(
             sample_tokens = torch.multinomial(verifier_distribution[:, -1, :], num_samples=1)
         accept_tokens.append(sample_tokens)
         logger.debug(f"Sample token {sample_tokens}")
-    return torch.cat(accept_tokens, dim=-1)
+    return torch.cat(accept_tokens, dim=-1), alpha, sample_steps
 
 
 def synchronize_time() -> float:
