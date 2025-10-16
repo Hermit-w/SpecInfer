@@ -14,7 +14,7 @@ setup(
         "Programming Language :: Python :: 3.12",
     ],
     keywords="sample, setuptools, development",
-    packages=find_packages(exclude=["test_scripts*", "*.yaml", "mypy_cache*", ".vcode*"]),
+    packages=find_packages(exclude=["test_scripts*", "*.yaml", "mypy_cache*", ".vscode*"]),
     python_requires=">=3.8",
 
 )

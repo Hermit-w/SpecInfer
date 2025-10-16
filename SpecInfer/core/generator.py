@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import torch
+import numpy as np
 
 from .common import (InputForCasualLm, OutputForCasualLm, speculative_sample,
                      synchronize_time)
@@ -25,8 +26,16 @@ class GeneratorOutput:
     correct_tokens: torch.Tensor
     propose_steps: int
     sample_steps: int
-    alpha_sum: float
+    alpha_sum: list[float]
     wrong_token_ids: list[int]
+
+    def summary(self) -> str:
+        return (
+            f"The output is: {self.output}.\n"
+            f"The target model forward {self.propose_steps} times.\n"
+            f"We accept {self.correct_tokens.shape[1]} tokens.\n"
+            f"The expected accept rate is {sum(self.alpha_sum)/self.sample_steps}."
+        )
 
 
 class SpecGenerator:
@@ -35,13 +44,11 @@ class SpecGenerator:
         draft_model: "_BaseModelWithGenerate",
         target_model: "_BaseModelWithGenerate",
         tokenizer: "PreTrainedTokenizerBase",
-        max_propose_num: int,
         benchmark_time: bool = False,
     ):
         self.draft_model: "_BaseModelWithGenerate" = draft_model
         self.target_model: "_BaseModelWithGenerate" = target_model
         self.tokenizer: "PreTrainedTokenizerBase" = tokenizer
-        self.max_propose_num: int = max_propose_num
 
         # metrics
         self.benchmark_time: bool = benchmark_time
@@ -62,6 +69,7 @@ class SpecGenerator:
         self,
         input_ids: torch.Tensor,
         attention_mask: torch.Tensor,
+        max_propose_num: int,
         max_tokens: int,
         temperature: float = 0.01,
     ) -> GeneratorOutput:
@@ -78,17 +86,18 @@ class SpecGenerator:
         verifier_input = copy.deepcopy(proposer_input)
         correct_tokens_list = []
         propose_steps = 0
-        alpha, sample_steps = 0, 0
+        alpha: list[float] = []
+        sample_steps = 0
         while True:
             if self.benchmark_time:
                 start = synchronize_time()
             # propose n tokens, proposer always propose the token with highest probability
             proposer_output = self.proposer.propose(
                 proposer_input,
-                self.max_propose_num,
+                max_propose_num,
                 sample_method
             )
-            logger.debug(f"Step: {propose_steps}, proposer: {decode(self.tokenizer, proposer_output.output_ids)}") # noqa
+
             propose_steps += 1
 
             # forward n tokens on the model in the a single run
@@ -99,12 +108,12 @@ class SpecGenerator:
             )
 
             # compare selected tokens
-            accept_token_ids = self._sample_tokens(
+            accept_token_ids, cur_alpha, cur_sample_steps = self._sample_tokens(
                 proposer_output, verifier_output
             )
             logger.debug(f"Accept_token: {decode(self.tokenizer, accept_token_ids)}")
-            # alpha += cur_alpha
-            # sample_steps += cur_sample_steps
+            alpha.extend(cur_alpha)
+            sample_steps += cur_sample_steps
             # logger.log("acc_tokens", accept_token_ids)
             generated_tokens_list.append(accept_token_ids)
             generated_token_cnt += accept_token_ids.shape[1]
@@ -145,13 +154,21 @@ class SpecGenerator:
         self,
         proposer_output: OutputForCasualLm,
         verifier_output: OutputForCasualLm,
-    ) -> torch.Tensor:
+    ) -> tuple[torch.Tensor, list[float], int]:
         return speculative_sample(proposer_output, verifier_output)
 
-    def print_time(self):
+    def summary(self) -> str:
         if self.benchmark_time:
-            logger.info(f"[Generator time]: {self.generation_time}")
-            logger.info(
-                f"[Max allocated memory]: \
-                 {torch.cuda.max_memory_allocated() / 1024 / 1024} MB"
+            return (
+                f"Generator:\n"
+                f"\tTotal time(prompt phase + decode phase): {np.sum(self.generation_time)}s.\n"
+                f"\tGeneration time(prompt phase): {self.generation_time[0]}s.\n"
+                f"\tGeneration time(decode phase): {np.median(self.generation_time[1:])}s.\n"
+                f"\tMax allocated memory: {torch.cuda.max_memory_allocated() / 1024 / 1024} MB."
             )
+        else:
+            return ""
+
+    def print(self):
+        if self.benchmark_time:
+            logger.info("\n" + self.summary())

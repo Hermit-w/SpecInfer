@@ -29,8 +29,8 @@ class Verifier:
         self.tokenizer = tokenizer
 
         self.verify_time: list[float] = []
-        self.prepare_input_time: float = 0.0
-        self.adjust_input_time: float = 0.0
+        self.prepare_input_time: list[float] = []
+        self.adjust_input_time: list[float] = []
         self.benchmark_time: bool = benchmark_time
 
     def verify(
@@ -85,7 +85,7 @@ class Verifier:
         logger.debug(f"Inputs of verifier now is {decode(self.tokenizer, input_ids)}")
         if self.benchmark_time:
             end = synchronize_time()
-            self.prepare_input_time += (end - start)
+            self.prepare_input_time.append(end - start)
             start = end
 
         outputs: CausalLMOutputWithPast = self.model(
@@ -136,7 +136,7 @@ class Verifier:
         verifier_attn_masks = torch.ones((bs, verifier_valid_len + 1), dtype=torch.int64, device=self.model.device)
 
         if self.benchmark_time:
-            self.adjust_input_time += synchronize_time() - start
+            self.adjust_input_time.append(synchronize_time() - start)
 
         return InputForCasualLm(
             accept_token_ids[:, -1].unsqueeze(1),
@@ -144,9 +144,19 @@ class Verifier:
             verifier_key_values
         )
 
-    def print_time(self):
+    def summary(self) -> str:
         if self.benchmark_time:
-            print(f"[Verifier] prompt phase: {self.verify_time[0]}, "
-                  f"decode phase: {np.median(self.verify_time[1:])}, ",
-                  f"adjust time: {self.adjust_input_time}, ",
-                  f"prepare input time: {self.prepare_input_time}")
+            return (
+                f"Verifier:\n"
+                f"\tTotal time(prompt phase + decode phase): {np.sum(self.verify_time)}s.\n"
+                f"\tPrompt phase: {self.verify_time[0]}s.\n"
+                f"\tDecode phase: {np.median(self.verify_time[1:])}s.\n"
+                f"\tAdjust time: {np.mean(self.adjust_input_time)}s.\n"
+                f"\tPrepare input time: {np.mean(self.prepare_input_time)}s."
+            )
+        else:
+            return ""
+
+    def print(self):
+        if self.benchmark_time:
+            logger.info("\n" + self.summary())

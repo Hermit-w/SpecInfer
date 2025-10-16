@@ -57,7 +57,7 @@ class ModelLoader:
         model_name_or_path: str,
         tp_size: int = 1,
         *,
-        torch_dtype: str = "auto",
+        torch_dtype: Union[str, "dtype"] = "auto",
     ) -> tuple["_BaseModelWithGenerate", transformers.PreTrainedTokenizerBase]:
         tokenizer = AutoTokenizer.from_pretrained(
             model_name_or_path,

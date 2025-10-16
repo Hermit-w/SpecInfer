@@ -13,4 +13,4 @@ __all__ = [
     "get_softmax_func",
     "speculative_sample",
     "SpecGenerator",
-    ]
+]

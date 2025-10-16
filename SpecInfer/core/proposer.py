@@ -24,8 +24,8 @@ class Proposer(ABC):
         self,
         benchmark_time: bool
     ):
-        self.propose_time_list: list[float] = []
-        self.adjust_time_list: list[float] = []
+        self.propose_time: list[float] = []
+        self.adjust_time: list[float] = []
 
         self.benchmark_time: bool = benchmark_time
 
@@ -42,7 +42,7 @@ class Proposer(ABC):
 
         if self.benchmark_time:
             end = synchronize_time()
-            self.propose_time_list.append(start - end)
+            self.propose_time.append(end - start)
 
         return ret
 
@@ -72,7 +72,7 @@ class Proposer(ABC):
 
         if self.benchmark_time:
             end = synchronize_time()
-            self.adjust_time_list.append(start - end)
+            self.adjust_time.append(start - end)
 
         return ret
 
@@ -85,11 +85,21 @@ class Proposer(ABC):
     ) -> InputForCasualLm:
         raise NotImplementedError
 
-    def print_time(self):
+    def summary(self) -> str:
         if self.benchmark_time:
-            logger.info(f"[Proposer] prompt phase: {self.propose_times[0]},",
-                        f" decode phase: {np.median(self.propose_times[1:])},",
-                        f" adjust time: {self.adjust_time}")
+            return (
+                f"Proposer:\n"
+                f"\tTotal time(prompt phase + decode phase): {np.sum(self.propose_time)}s.\n"
+                f"\tPrompt phase: {self.propose_time[0]}s.\n"
+                f"\tDecode phase: {np.median(self.propose_time[1:])}s.\n"
+                f"\tAdjust time: {np.mean(self.adjust_time)}s."
+            )
+        else:
+            return ""
+
+    def print(self):
+        if self.benchmark_time:
+            logger.info("\n" + self.summary())
 
 
 class ModelWithCacheProposer(Proposer):

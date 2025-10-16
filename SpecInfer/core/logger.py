@@ -20,7 +20,8 @@ def setup_logger(
     setup logger that is compatiable with distributed system
     Args:
         log_path: directory to save log file. If None, only log to console.
-        level: logging level, default to "info". Can be one of "info", "debug", "critical", "error", "fatal", "warning".
+        level: logging level, default to "info".
+            Can be one of ["info", "debug", "critical", "error", "fatal", "warning"].
         rank: rank of the current process. If None, will read from environment variable "RANK".
         force_console: if True, log to console while logging to file when log_path is provided.
     """
